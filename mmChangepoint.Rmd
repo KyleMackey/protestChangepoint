@@ -1,0 +1,697 @@
+---
+title: "Analysis of Changepoints in Mass Mobilization Data"
+author: Kyle Mackey
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: textmate
+    code_folding: hide
+---
+
+```{r echo = FALSE}
+##
+##  Note the CSS code immediately below can be attributed to:
+##  https://gist.github.com/Pakillo/8b46a48ea806572566d9
+##
+```
+<style type="text/css">
+
+body, td {
+   font-size: 17px;
+}
+code.r{
+  font-size: 14px;
+}
+pre {
+  font-size: 14px
+}
+</style>
+  
+
+# Overview
+
+The following models aim to address two questions: First, are there differences in protest behavior and state response for a selection of countries in the Mass Mobilization data over time? In other words, can we determine if the number of protests, the number of violent protests, or the number of violent state responses in a country changes over time? The second question asks whether we can model these changes, identifying the point in time when protests and state response changed for a given country. To address these two related questions, we will rely on Bayesian changepoint methods. In what follows, we outline how the Bayesian changepoint methods are applied to the Mass Mobilization's protest and state response data, and proceed by evaluating changepoints in R. The models illustrate that there are significant changes in protest behavior over time. We urge scholars to seek uses of the Mass Mobilization data that incorporate the possibility of temporal changes; we also urge scholars to develop theories to explain that change over time. The code *should* reproduce the results and figures exactly. Note that all code for this analysis is hidden by default. The code used in this analysis can be displayed by clicking the "Code" button on the far right for each chunk of code.
+
+``` {r message = FALSE}
+##
+##	Load in some packages
+##
+#install.packages(c("foreign", "ggplot2", 
+#                   "gridExtra", "kableExtra", 
+#                   "knitr", "MCMCpack"))
+library("foreign")
+library("ggplot2")
+library("gridExtra")
+library("kableExtra")
+library("knitr")
+library("MCMCpack")
+
+##
+##	Custom ggplot theme for figures
+##						
+theme_set(theme_classic())
+custom <- theme_update(axis.text.x = element_text(colour="black", size=15),
+                       axis.text.y = element_text(colour="black", size=15),
+                       axis.title.x = element_text(size=15),
+                       axis.title.y = element_text(size=15, angle=90),
+                       title = element_text(size=15),
+                       panel.grid = element_line(colour = NULL, linetype = 1), 
+                       panel.grid.major = element_line(colour = "gray78"),
+                       panel.grid.major.x = element_blank(), 
+                       panel.grid.minor = element_blank()
+) 
+```
+
+``` {r}
+##
+##	Load in the data
+##
+dat <- read.dta("monthlyProtestsChangepoint.dta")
+```
+
+# Changepoint Models
+
+Our unit of analysis is the country-month (e.g. France in April 2010). We have three outcomes of interest, each measured as a count:
+
+- Monthly protests
+- Monthly protester violence
+- Monthly state violent responses (beatings, shootings, killings)
+
+We collapse the last two categories---protester violence and state violence---together to focus on violent protests. For this analysis, our countries of interest are:^[There is nothing unique about this country selection---it is simply a convenience sample.]
+
+- Egypt       
+- France  
+- Thailand
+
+With the measurement and unit of analysis in mind, we evaluate changes in the average number of protests and average number of violent protests with a Poisson changepoint model. We have a series of count data on monthly protests and protest violence for each country in our sample. For each series of monthly protest data across each country, $y_{1}, \dots, y_{n}$,^[To avoid complexity, note that the series $y_{1}, \dots, y_{n}$ can represent a series of data for Egypt, France, or Thailand.] there exists the possibility of a changepoint, where at some point in the series, $k$, a new data-generating process takes effect; there can be zero, one, two, or some large number of changepoints in the series. The source of changepoints can be global (e.g. changes in major powers or economic relations), regional (e.g. the Arab Spring in 2010-11), or domestic (e.g. changes in government, coups, uprisings, or transitions). We leave the task of identifying the exact causes of these changes to other scholars, though we offer some perspectives on the changepoints detected in the countries below. Formally, the data-generating process for a single Poisson changepoint model can be represented as two Poisson data-generating processes, separated by $k$, the changepoint:^[See @Gill2008Bayesian [360-363].]
+
+$$
+\begin{equation}
+\begin{array}{ll}
+y_{i}|\lambda \sim Poisson(\lambda) \quad\quad\quad i = 1, \dots, k \\
+y_{i}|\phi \sim Poisson(\phi) \quad\quad\quad i = k+1, \dots, n .
+\end{array}
+\end{equation}
+$$
+Similarly, a three changepoint model would look as follows:
+
+$$
+\begin{equation}
+\begin{array}{ll}
+y_{i}|\lambda \sim Poisson(\lambda) \quad\quad\quad i = 1, \dots, k \\
+y_{i}|\phi \sim Poisson(\phi) \quad\quad\quad i = k+1, \dots, m \\
+y_{i}|\theta \sim Poisson(\theta) \quad\quad\quad\ i = m+1, \dots, n . 
+\end{array}
+\end{equation}
+$$
+``` {r message = FALSE}
+##
+##	Create a function that can be used to plot the monthly
+##  protests or monthly violent protests for each country
+##
+protestPlot <- function(data, country, id, typeProtest){
+      plotName  <- ggplot(subset(data, subjectID == id), 
+                           aes(x=timeID, y=protest)) + 
+                   geom_point(size=2.5, col="#0099FF") + 
+                   geom_smooth(size=2, se=FALSE, 
+                           span = 0.33, col="red") + 
+                   scale_x_continuous(breaks=seq(1,336,72),
+												   labels=paste("Jan", 
+										       seq(1990,2017,6))) + 
+        
+        
+        
+        
+        
+                   theme(axis.text.x = element_text(angle=90)) +   
+                   ggtitle(paste(country, 
+                                 paste("(", typeProtest, ")", sep="")
+                                 )
+                           ) + 
+                   xlab(" ") + ylab("Protest Count")
+      return(plotName) 
+}
+```
+
+When examining total protests and violent protests in the three selected countries, it appears as though there are points in time where the frequency of protests---total or violent---changes. On each country plot below is a smoothing function---based on LOESS---which aids in visually inspecting the protest data to determine if there is reason to suspect that the data-generating process changes over time in a specific country.
+
+``` {r fig1, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 8, fig.cap="Figure 1: Comparing Total and Violent Protests For Selected Countries"}
+##
+##  Create a list of attributes (country name and id)
+##
+protestPlotData <- list(country = unique(dat$country),
+                        id      = seq(1,6,1))
+
+##
+##  Create a list of plot names for total and violent protests
+##
+plotNamesTot <- paste("plot", unique(dat$country), "Total", sep="")
+plotNamesVio <- paste("plot", unique(dat$country), "Violent", sep="")
+
+##
+##  Subset into total protests and violent protests
+##
+totProtestDat <- data.frame(country = dat$country, 
+                            timeID = dat$timeID, 
+                            subjectID = dat$subjectID, 
+                            protest = dat$protest)
+
+vioProtestDat <- data.frame(country = dat$country, 
+                            timeID = dat$timeID, 
+                            subjectID = dat$subjectID, 
+                            protest = dat$violentprotest)
+
+##
+##  Loop through plots for total monthly protests
+##
+for (i in 1:length(protestPlotData$country)){
+    plotOut <- protestPlot(totProtestDat, 
+                           protestPlotData$country[i], 
+                           protestPlotData$id[i],
+                           typeProtest = "Total")
+    assign(plotNamesTot[i], plotOut)
+}
+
+##
+##  Loop through plots for total monthly violent protests
+##
+for (i in 1:length(protestPlotData$country)){
+    plotOut <- protestPlot(vioProtestDat, 
+                           protestPlotData$country[i], 
+                           protestPlotData$id[i],
+                           typeProtest = "Violent")
+    assign(plotNamesVio[i], plotOut)
+}
+
+##
+##  Combine the plots
+##
+grid.arrange(plotEgyptTotal, plotFranceTotal, plotThailandTotal, 
+             plotEgyptViolent, plotFranceViolent, plotThailandViolent,
+             ncol=3)
+```
+
+# Analysis
+
+A Poisson changepoint model is run for each of the three countries for both types of protests---total and violent---and each sampler runs 5,000 draws, with a 1,000 draw burn-in period and a 10 chain thinning parameter.^[Since the sampler is a Markov Chain, the draws at $t$ depend on values of the chain at $t - 1$. The thinning parameter reduces the problem of autocorrelation between successive draws by selecting every 10 draws---as in our case---omitting the 9 draws between each draw. This procedure significantly increases the amount of draws and therefore the amount of time to run the sampler, though at the benefit of correcting for potential autocorrelation.] We test for anywhere between one and three changepoints, using Bayes factor to determine the most likely number of changepoints.
+
+``` {r}
+##
+##  Set seed for replication
+##
+set.seed(9)
+```
+
+## Egypt 
+
+Examining Egypt provides an opportunity to test the validity of the Mass Mobilization data, given the relevance of the Arab Spring in reshaping the politics of Egypt. Reflecting on the protests---total and violent---in Figure 1 above, there appears to be a spike in both types of protests beginning somewhere between 2008 and 2010, though the exact changepoint is difficult to discern from the figure.
+
+### Total Protests
+
+To determine the likely location of the change in Egypt's total protest behavior, we run three Poisson changepoint models, one model for each of three likely changepoints.
+
+``` {r}
+##
+##  Select only Egypt
+##
+datEgypt <- subset(dat, country=="Egypt")
+
+##
+##  Run the Poisson changepoint models
+##  (Total protests)
+##
+m1EgyptTot <- MCMCpoissonChange(protest ~ 1,
+                                data = datEgypt,
+                                m = 1,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m2EgyptTot <- MCMCpoissonChange(protest ~ 1,
+                                data = datEgypt,
+                                m = 2,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m3EgyptTot <- MCMCpoissonChange(protest ~ 1,
+                                data = datEgypt,
+                                m = 3,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+
+##
+##  Use Bayes Factor to find the appropriate model and
+##  number of changepoints
+##
+bfEgyptTot <- BayesFactor(m1EgyptTot, m2EgyptTot, m3EgyptTot)
+```
+
+We choose the model with one changepoint, which has the strongest support relative to the two or three changepoint models. Regarding total protests, it appears as though the changepoint occurred during January 2011, as depicted in the posterior regime probability plot below. Before January 2011, Egypt experienced an average of 0.14 protests per month; though distinguishable from zero---a 95\% interval is [0.10, 0.19]---substantively speaking, protests in the pre-January 2011 period can be considered an extreme rarity, nearly nonexistent. After January 2011, however, protests in Egypt averaged around roughly 1.5 per month, with a 95\% interval of [1.19, 1.85] around that mean. The two means for each period---pre- and post-January 2011---are distinguishable from one another, suggesting that January 2011---less than a month after the start of the Arab Spring in Tunisia---caused a notable shift in Egypt's total monthly protest behavior.
+
+``` {r fig2, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 6, fig.cap="Figure 2: Posterior Regime Probability (Total Protests)"}
+##
+##  Plot probability state
+##
+plotState(m1EgyptTot, 
+          main = " ")
+```
+
+### Violent Protests
+
+When examining the results for violent protests in Egypt, we also find evidence of a single changepoint, again located during January 2011. Similar to total protests, pre-January 2011 violent protests were an extreme rarity. Egypt experienced an average of 0.03 protests per month [0.01, 0.06] prior to January 2011. After January 2011, however, Egypt averaged 0.76 violent protests per month [0.53, 1.03]. Though less than one violent protest occurred per month after January 2011, the 95 percent intervals for violent protests before and after the changepoint do not overlap, indicating that protests became more violent in Egypt during and after the Arab Spring.
+
+``` {r}
+##
+##  Select only Egypt
+##
+datEgypt <- subset(dat, country=="Egypt")
+
+##
+##  Run the Poisson changepoint models
+##  (Violent protests)
+##
+m1EgyptVio <- MCMCpoissonChange(violentprotest ~ 1,
+                                data = datEgypt,
+                                m = 1,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m2EgyptVio <- MCMCpoissonChange(violentprotest ~ 1,
+                                data = datEgypt,
+                                m = 2,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m3EgyptVio <- MCMCpoissonChange(violentprotest ~ 1,
+                                data = datEgypt,
+                                m = 3,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+
+##
+##  Use Bayes Factor to find the appropriate model and
+##  number of changepoints
+##
+bfEgyptVio <- BayesFactor(m1EgyptVio, m2EgyptVio, m3EgyptVio)
+```
+
+
+``` {r fig3, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 6, fig.cap="Figure 3: Posterior Regime Probability (Violent Protests)"}
+##
+##  Plot probability state
+##
+plotState(m1EgyptVio, 
+          main = " ")
+```
+
+## France 
+
+While Egypt provided an opportunity to test the Mass Mobilization data's validity with a changepoint that is known---or, expected through historical circumstances---an analysis of protest behavior in France provides an opportunity to determine if there is a changepoint we do not know about.^[We profess ignorance of French politics, and invite scholars of French politics, history, and society to provide explanations and historical context for our findings.] 
+
+### Total Protests
+
+We implement the same changepoint models---one to three changepoints---to total and violent protests in France. There appears to be a drop in French protests somewhere before January 2002, based on evidence in the first figure above. 
+
+``` {r}
+##
+##  Select only France
+##
+datFrance <- subset(dat, country=="France")
+
+##
+##  Run the Poisson changepoint models
+##  (Total protests)
+##
+m1FranceTot <- MCMCpoissonChange(protest ~ 1,
+                                data = datFrance,
+                                m = 1,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m2FranceTot <- MCMCpoissonChange(protest ~ 1,
+                                data = datFrance,
+                                m = 2,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m3FranceTot <- MCMCpoissonChange(protest ~ 1,
+                                data = datFrance,
+                                m = 3,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+
+##
+##  Use Bayes Factor to find the appropriate model and
+##  number of changepoints
+##
+bfFranceTot <- BayesFactor(m1FranceTot, m2FranceTot, m3FranceTot)
+```
+
+The analysis finds one likely changepoint for total protests in France. We plot the posterior regime probability for state one---which lasts until March 1999---and state two---beginning after March 1999. Before March 1999, protests averaged around roughly 2.26 per month, with a 95\% interval of [2.01, 2.55]. After March 1999, protests in France dropped by more than half, to roughly 0.74 per month [0.62, 0.87]. Periods one and two are distinguishable, suggesting that total protests in France have been on the decline, relative to total protests prior to March 1999.
+
+``` {r fig4, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 6, fig.cap="Figure 4: Posterior Regime Probability (Total Protests)"}
+##
+##  Plot changepoint
+##
+plotState(m1FranceTot, 
+          main = " ")
+```
+
+### Violent Protests
+
+When examining violent protests in France, the models suggest the existence of three changepoints---violent protests in France were observed under four data generating processes:
+
+- January 1990 - June 1999
+- June 1999 - March 2006
+- March 2006 - May 2006
+- May 2006 - December 2014
+
+``` {r}
+##
+##  Select only France
+##
+datFrance <- subset(dat, country=="France")
+
+##
+##  Run the Poisson changepoint models
+##  (Violent protests)
+##
+m1FranceVio <- MCMCpoissonChange(violentprotest ~ 1,
+                                data = datFrance,
+                                m = 1,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m2FranceVio <- MCMCpoissonChange(violentprotest ~ 1,
+                                data = datFrance,
+                                m = 2,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m3FranceVio <- MCMCpoissonChange(violentprotest ~ 1,
+                                data = datFrance,
+                                m = 3,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+
+##
+##  Use Bayes Factor to find the appropriate model and
+##  number of changepoints
+##
+bfFranceVio <- BayesFactor(m1FranceVio, m2FranceVio, m3FranceVio)
+```
+When examining the posterior regime probability plot for violent protests, the probabilities do not appear as distinct as observed in the previous models; there may be some overlap between regimes, and this may be a consequence of the data, and not an underlying shifting trend in French protests.
+``` {r fig5, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 6, fig.cap="Figure 5: Posterior Regime Probability (Violent Protests)"}
+##
+##  Plot changepoint
+##
+plotState(m3FranceVio, 
+          main = " ")
+```
+Consider the 95 percent interval plots for the four regimes. While violent protests do appear to be cyclical from 1990 to 2014, the means for each regime are indistinguishable, casting doubt on the claim that violent protests were changing during the time period in this study.
+``` {r fig6, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 6, fig.cap="Figure 6: 95% Intervals for Violent Protests in France"}
+##
+##  Adjust ggplot theme
+##
+theme_set(theme_classic())
+custom <- theme_update(axis.text.x = element_text(colour="black", size=15),
+                       axis.text.y = element_text(colour="black", size=15),
+                       axis.title.x = element_text(size=15),
+                       axis.title.y = element_text(size=15, angle=90),
+                       title = element_text(size=15),
+                       panel.grid = element_line(colour = NULL, linetype = 1), 
+                       panel.grid.major.x = element_blank(), 
+                       panel.grid.minor = element_blank()
+) 
+
+##
+##  Get posterior summaries into a data frame
+##
+meansFranceVio <- data.frame(
+                 count  = seq(1,4,1),
+                 regime = c("Jan 1990 - Jun 1999", 
+                                      "Jun 1999 - Mar 2006",
+                                      "Mar 2006 - May 2006",
+                                      "May 2006 - Dec 2014"),
+                  means = c(summary(m3FranceVio)$statistics[1,1],
+                            summary(m3FranceVio)$statistics[2,1],
+                            summary(m3FranceVio)$statistics[3,1],
+                            summary(m3FranceVio)$statistics[4,1]),
+                  lowerCI = c(summary(m3FranceVio)$quantiles[1],
+                              summary(m3FranceVio)$quantiles[2],
+                              summary(m3FranceVio)$quantiles[3],
+                              summary(m3FranceVio)$quantiles[4]),
+                  upperCI = c(summary(m3FranceVio)$quantiles[17],
+                              summary(m3FranceVio)$quantiles[18],
+                              summary(m3FranceVio)$quantiles[19],
+                              summary(m3FranceVio)$quantiles[20])
+                  )
+
+##
+##  Create 95% interval plot
+##
+Fra95 <- ggplot(meansFranceVio, aes(colour=regime,
+  							  x=count, 			
+							  y=means,
+							  ymin=lowerCI, 
+						      ymax=upperCI))
+Fra95 <- Fra95 + geom_pointrange(lwd = 1)
+Fra95 <- Fra95 + scale_x_continuous(breaks = seq(1,4,1), 
+                                      labels = c("Jan 1990 - Jun 1999", 
+                                      "Jun 1999 - Mar 2006",
+                                      "Mar 2006 - May 2006",
+                                      "May 2006 - Dec 2014"))
+Fra95 <- Fra95 + coord_flip() 
+Fra95 <- Fra95 + ggtitle(" ")
+Fra95 <- Fra95 + xlab(" ") + ylab(" Average Protests")
+Fra95 <- Fra95 + theme(legend.position = "none") 
+Fra95
+```
+
+## Thailand
+
+Finally, we examine the data on total and violent protests in Thailand, suspecting that there may be reason to believe that multiple changepoints exist. The total and violent protests plots for Thailand depict a cyclical pattern, which we explore with the changepoint models below.
+
+### Total Protests
+
+We find the existence of three changepoints in Thailand, demonstrating a shifting trend in total protests over time. The models indicate that the changepoints occurred at May 2000, March 2011, and November 2013. Since there are multiple regimes to compare---four to be precise---we again plot posterior means and 95\% intervals for each regime.
+``` {r}
+##
+##  Select only Thailand
+##
+datThailand <- subset(dat, country=="Thailand")
+
+##
+##  Run the Poisson changepoint models
+##  (Total protests)
+##
+m1ThailandTot <- MCMCpoissonChange(protest ~ 1,
+                                data = datThailand,
+                                m = 1,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m2ThailandTot <- MCMCpoissonChange(protest ~ 1,
+                                data = datThailand,
+                                m = 2,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m3ThailandTot <- MCMCpoissonChange(protest ~ 1,
+                                data = datThailand,
+                                m = 3,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+
+##
+##  Use Bayes Factor to find the appropriate model and
+##  number of changepoints
+##
+bfThailandTot <- BayesFactor(m1ThailandTot, m2ThailandTot, m3ThailandTot)
+```
+
+``` {r fig7, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 6, fig.cap="Figure 7: Posterior Regime Probability (Total Protests)"}
+##
+##  Plot changepoint
+##
+plotState(m3ThailandTot, 
+          main = " ")
+```
+From January 1990 to May 2000, protests in Thailand averaged 0.19 per month---with a 95 percent interval of [0.11, 0.28]---and were a relatively rare event. After May 2000, however, protests increased to 1.10 per month [0.94, 1.29]; that average of one protest per month described Thailand's total monthly protest behavior until March 2011, when after that point, protest involvement declined to levels observed in the January 1990 to May 2000 period. The March 2011 to November 2013 period averaged 0.30 protests per month [0.12, 0.53], falling back near January 1990 to May 2000 monthly averages. The cycling politics of Thailand again led to a change in protest behavior, when, after November 2013, Thailand averaged slightly under 2.5 protests per month [1.68, 3.34].
+``` {r fig8, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 6, fig.cap="Figure 8: 95% Intervals for Total Protests in Thailand"}
+##
+##  Adjust ggplot theme
+##
+theme_set(theme_classic())
+custom <- theme_update(axis.text.x = element_text(colour="black", size=15),
+                       axis.text.y = element_text(colour="black", size=15),
+                       axis.title.x = element_text(size=15),
+                       axis.title.y = element_text(size=15, angle=90),
+                       title = element_text(size=15),
+                       panel.grid = element_line(colour = NULL, linetype = 1), 
+                       panel.grid.major.x = element_blank(), 
+                       panel.grid.minor = element_blank()
+) 
+
+##
+##  Get posterior summaries into a data frame
+##
+meansThaiTot <- data.frame(
+                 count  = seq(1,4,1),
+                 regime = c("Jan 1990 - May 2000", 
+                                      "May 2000 - Mar 2011",
+                                      "Mar 2011 - Nov 2013",
+                                      "Nov 2013 - Dec 2014"),
+                  means = c(summary(m3ThailandTot)$statistics[1,1],
+                            summary(m3ThailandTot)$statistics[2,1],
+                            summary(m3ThailandTot)$statistics[3,1],
+                            summary(m3ThailandTot)$statistics[4,1]),
+                  lowerCI = c(summary(m3ThailandTot)$quantiles[1],
+                              summary(m3ThailandTot)$quantiles[2],
+                              summary(m3ThailandTot)$quantiles[3],
+                              summary(m3ThailandTot)$quantiles[4]),
+                  upperCI = c(summary(m3ThailandTot)$quantiles[17],
+                              summary(m3ThailandTot)$quantiles[18],
+                              summary(m3ThailandTot)$quantiles[19],
+                              summary(m3ThailandTot)$quantiles[20])
+                  )
+
+##
+##  Create 95% interval plot
+##
+thai95 <- ggplot(meansThaiTot, aes(colour=regime,
+  							  x=count, 			
+							  y=means,
+							  ymin=lowerCI, 
+						      ymax=upperCI))
+thai95 <- thai95 + geom_pointrange(lwd = 1)
+thai95 <- thai95 + scale_x_continuous(breaks = seq(1,4,1), 
+                                      labels = c("Jan 1990 - May 2000", 
+                                      "May 2000 - Mar 2011",
+                                      "Mar 2011 - Nov 2013",
+                                      "Nov 2013 - Dec 2014"))
+thai95 <- thai95 + coord_flip() 
+thai95 <- thai95 + ggtitle(" ")
+thai95 <- thai95 + xlab(" ") + ylab(" Average Protests")
+thai95 <- thai95 + theme(legend.position = "none") 
+thai95
+```
+
+### Violent Protests
+
+Finally, the analysis aims to determine if Thailand's shifting protest behavior in the aggregate is also present in Thailand's violent protests. While the models above indicate the existence of three changepoints in Thailand's total protests, the models in this section suggest the existence of only one changepoint during July 1998. Before July 1998, Thailand experienced 0.02 violent protests per month [0.0002, 0.076], an extremely rare occurrence; after July 1998, the country experienced an average of 0.15 protests per month [0.088, 0.508], again a rarity. Though these two periods are distinguishable in their 95 percent intervals, the results suggest very little substantively, aside from the conclusion that violent protests in Thailand are quite rare in number.
+
+``` {r}
+##
+##  Select only Thailand
+##
+datThailand <- subset(dat, country=="Thailand")
+
+##
+##  Run the Poisson changepoint models
+##  (Violent protests)
+##
+m1ThailandVio <- MCMCpoissonChange(violentprotest ~ 1,
+                                data = datThailand,
+                                m = 1,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m2ThailandVio <- MCMCpoissonChange(violentprotest ~ 1,
+                                data = datThailand,
+                                m = 2,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+m3ThailandVio <- MCMCpoissonChange(violentprotest ~ 1,
+                                data = datThailand,
+                                m = 3,
+                                c0 = 1,
+                                d0 = 1,
+                                burnin = 1000,
+                                mcmc = 5000,
+                                thin = 10,
+                                marginal.likelihood = "Chib95")
+
+##
+##  Use Bayes Factor to find the appropriate model and
+##  number of changepoints
+##
+bfThailandVio <- BayesFactor(m1ThailandVio, m2ThailandVio, m3ThailandVio)
+```
+
+``` {r fig9, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 6, fig.cap="Figure 9: Posterior Regime Probability (Violent Protests)"}
+##
+##  Plot changepoint
+##
+plotState(m1ThailandVio, 
+          main = " ")
+```
+
+# Conclusions
+
+The models shown above aimed to question whether protest behavior in the selected countries remains static over time. While total protests in Egypt increased after the changepoint near the onset of the Arab Spring, total protests in France declined after the likely change in the data-generating process in March 1999. Further, as evidence from Thailand demonstrates, the existence of more than one changepoint is likely in the Mass Mobilization data. The above illustrates two important points about the Mass Mobilization data: First, as the results of Egypt suggest, there is good reason to believe in the validity of the Mass Mobilization data, as the analysis finds the Arab Spring to be a pivotal moment in Egyptian politics. 
+
+Second, from a broader perspective, this analysis questions the assumption that the outcomes of interest to scholars and policy makers are time invariant. There is good reason to believe that the countries selected above are not unique, and that many other countries in the Mass Mobilization data also experience shifts in the way citizens form movements against their governments. Changes can be as striking and well documented as Egypt's shift during the Arab Spring, as intriguing as the cause of the shift in French total protest behavior in 1999, or as turbulent as the cyclical shifts of movements in Thailand. 
+
+The models and methods used in this analysis are overly simplified; none specify a causal argument or predictors that would form a regression model. However, the results in this analysis do suggest that researchers using the Mass Mobilization data---and certainly any time-series data---should consider the possibility that the predictors of protests---total or violent---may change in their effect over time. Perhaps a predictor such as regime type may have a negative effect on protest frequency in one period and a positive effect in the following period. A regression pooling both periods may cause the negative and positive effects to cancel out. This is one of many possibilities across an unknown number of changepoints and period-specific effects, which, unless considered, may mask interesting relationships in protest movements and state response. Though certainly challenging, we find the evidence above to have the benefit of urging scholars and policy makers to dig deeper into the causes and variation in citizens' movements against their governments, both cross-nationally and temporally.
+
+# References
+
